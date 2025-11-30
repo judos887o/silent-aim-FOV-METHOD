@@ -1,0 +1,391 @@
+--// SCHMECKT SILENT AIM – SAFE + FOV‑SLIDER LINKS UNTEN //--
+
+local Players         = game:GetService("Players")
+local RunService      = game:GetService("RunService")
+local Workspace       = game:GetService("Workspace")
+local CoreGui         = game:GetService("CoreGui")
+local Stats           = game:GetService("Stats")
+local UserInputService = game:GetService("UserInputService")
+
+local lp     = Players.LocalPlayer
+local mouse  = lp:GetMouse()
+local camera = Workspace.CurrentCamera
+
+-- Verhindere doppelten Hook
+if getgenv().SchmecktSilentHooked then
+    warn("[SchmecktSilent] already hooked")
+    return
+end
+getgenv().SchmecktSilentHooked = true
+
+--------------------------------------------------------------------
+-- SETTINGS
+--------------------------------------------------------------------
+local FOV_RADIUS      = 110        -- Start‑FOV
+local FOV_MIN         = 40         -- Minimaler FOV
+local FOV_MAX         = 260        -- Maximaler FOV
+
+local HIT_PART        = "Head"     -- "Head", "UpperTorso", "HumanoidRootPart"
+local ENABLE_PREDICTION = true
+local CHECK_WALLS     = true
+
+-- Prediction‑Tuning
+local BULLET_SPEED  = 400          -- Studs/sec (an dein Game anpassen)
+local BASE_TIME     = 0.03         -- Grunddelay
+local PING_WEIGHT   = 0.5          -- wie stark Ping mit reinzählt
+
+-- FOV‑Kreis Optik
+local SHOW_FOV_CIRCLE = true
+local FOV_COLOR       = Color3.fromRGB(255, 255, 255)
+local FOV_THICKNESS   = 2
+
+--------------------------------------------------------------------
+-- STATE: wird im RenderStep berechnet, Hook liest nur diese Variablen
+--------------------------------------------------------------------
+local SilentTargetChar  = nil      -- Character des Ziels
+local SilentTargetPart  = nil      -- Part des Ziels
+local SilentHitPosition = nil      -- Vector3 (mit Prediction)
+
+--------------------------------------------------------------------
+-- UI: FOV‑Kreis + Highlight
+--------------------------------------------------------------------
+do
+    local oldFov = CoreGui:FindFirstChild("SchmecktSilentFOV")
+    if oldFov then oldFov:Destroy() end
+    local oldHl = CoreGui:FindFirstChild("SchmecktSilentHighlight")
+    if oldHl then oldHl:Destroy() end
+end
+
+local fovGui = Instance.new("ScreenGui")
+fovGui.Name = "SchmecktSilentFOV"
+fovGui.ResetOnSpawn = false
+fovGui.IgnoreGuiInset = true
+fovGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+fovGui.Parent = CoreGui
+
+-- FOV‑Kreis
+local fovCircle = Instance.new("Frame")
+fovCircle.Name = "FOVCircle"
+fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+fovCircle.BackgroundTransparency = 1
+fovCircle.BorderSizePixel = 0
+fovCircle.Size = UDim2.new(0, FOV_RADIUS * 2, 0, FOV_RADIUS * 2)
+fovCircle.Position = UDim2.new(0, mouse.X, 0, mouse.Y)
+fovCircle.Visible = SHOW_FOV_CIRCLE
+fovCircle.Parent = fovGui
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = FOV_COLOR
+stroke.Thickness = FOV_THICKNESS
+stroke.Transparency = 0.2
+stroke.Parent = fovCircle
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(1, 0)
+corner.Parent = fovCircle
+
+local function updateFovCircle()
+    if not SHOW_FOV_CIRCLE then
+        fovCircle.Visible = false
+        return
+    end
+    fovCircle.Visible = true
+    fovCircle.Size = UDim2.new(0, FOV_RADIUS * 2, 0, FOV_RADIUS * 2)
+    fovCircle.Position = UDim2.new(0, mouse.X, 0, mouse.Y)
+end
+
+-- Highlight
+local highlight = Instance.new("Highlight")
+highlight.Name = "SchmecktSilentHighlight"
+highlight.FillTransparency = 1
+highlight.OutlineColor = Color3.new(1, 1, 1)
+highlight.OutlineTransparency = 0
+highlight.Enabled = false
+highlight.Parent = CoreGui
+
+local function updateHighlight()
+    if SilentTargetChar then
+        highlight.Adornee = SilentTargetChar
+        highlight.Enabled = true
+    else
+        highlight.Adornee = nil
+        highlight.Enabled = false
+    end
+end
+
+--------------------------------------------------------------------
+-- FOV‑SLIDER LINKS UNTEN
+--------------------------------------------------------------------
+local sliderFrame = Instance.new("Frame")
+sliderFrame.Name = "FOVSlider"
+sliderFrame.AnchorPoint = Vector2.new(0, 1)
+sliderFrame.Position = UDim2.new(0, 10, 1, -10)   -- links unten
+sliderFrame.Size = UDim2.new(0, 180, 0, 36)
+sliderFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+sliderFrame.BackgroundTransparency = 0.15
+sliderFrame.BorderSizePixel = 0
+sliderFrame.Parent = fovGui
+
+local sliderCorner = Instance.new("UICorner")
+sliderCorner.CornerRadius = UDim.new(0, 8)
+sliderCorner.Parent = sliderFrame
+
+local sliderStroke = Instance.new("UIStroke")
+sliderStroke.Color = Color3.fromRGB(255, 255, 255)
+sliderStroke.Thickness = 1
+sliderStroke.Transparency = 0.7
+sliderStroke.Parent = sliderFrame
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.BackgroundTransparency = 1
+titleLabel.Size = UDim2.new(0, 40, 1, 0)
+titleLabel.Position = UDim2.new(0, 6, 0, 0)
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.Text = "FOV"
+titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLabel.TextSize = 14
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = sliderFrame
+
+local valueLabel = Instance.new("TextLabel")
+valueLabel.BackgroundTransparency = 1
+valueLabel.Size = UDim2.new(0, 40, 1, 0)
+valueLabel.AnchorPoint = Vector2.new(1, 0)
+valueLabel.Position = UDim2.new(1, -4, 0, 0)
+valueLabel.Font = Enum.Font.Gotham
+valueLabel.Text = tostring(FOV_RADIUS)
+valueLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+valueLabel.TextSize = 13
+valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+valueLabel.Parent = sliderFrame
+
+local track = Instance.new("Frame")
+track.Name = "Track"
+track.AnchorPoint = Vector2.new(0, 0.5)
+track.Position = UDim2.new(0, 40, 0.5, 0)
+track.Size = UDim2.new(1, -80, 0, 6)
+track.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+track.BorderSizePixel = 0
+track.Parent = sliderFrame
+
+local trackCorner = Instance.new("UICorner")
+trackCorner.CornerRadius = UDim.new(0, 3)
+trackCorner.Parent = track
+
+local knob = Instance.new("Frame")
+knob.Name = "Knob"
+knob.Size = UDim2.new(0, 12, 0, 18)
+knob.AnchorPoint = Vector2.new(0.5, 0.5)
+knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+knob.BorderSizePixel = 0
+knob.Parent = track
+
+local knobCorner = Instance.new("UICorner")
+knobCorner.CornerRadius = UDim.new(1, 0)
+knobCorner.Parent = knob
+
+-- Startposition des Knobs anhand FOV
+local function radiusToAlpha()
+    return (FOV_RADIUS - FOV_MIN) / (FOV_MAX - FOV_MIN)
+end
+
+local function setFOVFromAlpha(a)
+    a = math.clamp(a, 0, 1)
+    knob.Position = UDim2.new(a, 0, 0.5, 0)
+    FOV_RADIUS = math.floor(FOV_MIN + (FOV_MAX - FOV_MIN) * a + 0.5)
+    valueLabel.Text = tostring(FOV_RADIUS)
+end
+
+setFOVFromAlpha(radiusToAlpha())
+
+local dragging = false
+
+local function getAlphaFromX(x)
+    local absPos  = track.AbsolutePosition.X
+    local absSize = track.AbsoluteSize.X
+    if absSize <= 0 then return 0 end
+    return (x - absPos) / absSize
+end
+
+track.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        setFOVFromAlpha(getAlphaFromX(input.Position.X))
+    end
+end)
+
+knob.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or
+       input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+        setFOVFromAlpha(getAlphaFromX(input.Position.X))
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+--------------------------------------------------------------------
+-- PING / PREDICTION (läuft NUR im RenderStep, NICHT im Hook)
+--------------------------------------------------------------------
+local function getPingSeconds()
+    local ok, pingMs = pcall(function()
+        local stat = Stats.Network.ServerStatsItem["Data Ping"]
+        if stat then
+            return stat:GetValue()
+        end
+        return 80
+    end)
+    if ok and pingMs then
+        return pingMs / 1000
+    end
+    return 0.08
+end
+
+local function getPredictionTime(distance)
+    local t = BASE_TIME
+    if BULLET_SPEED > 0 then
+        t = t + distance / BULLET_SPEED
+    end
+    t = t + getPingSeconds() * PING_WEIGHT
+    if t < 0.01 then t = 0.01 end
+    if t > 0.4  then t = 0.4  end
+    return t
+end
+
+local function getPredictedPos(char, part)
+    if not ENABLE_PREDICTION then
+        return part.Position
+    end
+
+    camera = Workspace.CurrentCamera or camera
+    if not camera or not part then
+        return part.Position
+    end
+
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+        return part.Position
+    end
+
+    local vel      = hrp.AssemblyLinearVelocity or hrp.Velocity
+    local distance = (part.Position - camera.CFrame.Position).Magnitude
+    local t        = getPredictionTime(distance)
+
+    return part.Position + vel * t
+end
+
+--------------------------------------------------------------------
+-- WALLCHECK
+--------------------------------------------------------------------
+local function isVisible(char, part)
+    if not CHECK_WALLS then return true end
+
+    camera = Workspace.CurrentCamera or camera
+    if not camera or not part then return false end
+
+    local origin    = camera.CFrame.Position
+    local direction = part.Position - origin
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    params.FilterDescendantsInstances = {lp.Character, char}
+    params.IgnoreWater = true
+
+    local result = Workspace:Raycast(origin, direction, params)
+    if not result then
+        return true
+    end
+    if result.Instance and result.Instance:IsDescendantOf(char) then
+        return true
+    end
+    return false
+end
+
+--------------------------------------------------------------------
+-- TARGET‑SUCHE (läuft NUR im RenderStep)
+--------------------------------------------------------------------
+local function findBestTarget()
+    camera = Workspace.CurrentCamera or camera
+    if not camera then
+        SilentTargetChar  = nil
+        SilentTargetPart  = nil
+        SilentHitPosition = nil
+        return
+    end
+
+    local bestChar, bestPart, bestPos
+    local shortest = FOV_RADIUS
+    local mousePos = Vector2.new(mouse.X, mouse.Y)
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= lp and plr.Character then
+            local char = plr.Character
+            local hum  = char:FindFirstChildOfClass("Humanoid")
+            local part = char:FindFirstChild(HIT_PART)
+
+            if hum and hum.Health > 0 and part then
+                local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
+                if onScreen and isVisible(char, part) then
+                    local d2 = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+                    if d2 < shortest then
+                        shortest = d2
+                        bestChar = char
+                        bestPart = part
+                    end
+                end
+            end
+        end
+    end
+
+    if bestChar and bestPart then
+        bestPos = getPredictedPos(bestChar, bestPart)
+        SilentTargetChar  = bestChar
+        SilentTargetPart  = bestPart
+        SilentHitPosition = bestPos
+    else
+        SilentTargetChar  = nil
+        SilentTargetPart  = nil
+        SilentHitPosition = nil
+    end
+end
+
+--------------------------------------------------------------------
+-- __index‑HOOK: liest NUR vorberechnete Werte
+--------------------------------------------------------------------
+local mt = getrawmetatable(game)
+setreadonly(mt, false)
+local oldIndex = mt.__index
+
+mt.__index = function(t, k)
+    if t == mouse and (k == "Hit" or k == "Target") then
+        if SilentTargetPart and SilentHitPosition then
+            if k == "Hit" then
+                return CFrame.new(SilentHitPosition)
+            else
+                return SilentTargetPart
+            end
+        end
+    end
+    return oldIndex(t, k)
+end
+-- kein setreadonly(mt,true), wie in deinen alten Scripts
+
+--------------------------------------------------------------------
+-- RenderStepped: Kreis, Target & Highlight updaten
+--------------------------------------------------------------------
+RunService.RenderStepped:Connect(function()
+    updateFovCircle()
+    findBestTarget()
+    updateHighlight()
+end)
