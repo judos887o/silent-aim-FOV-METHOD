@@ -1,17 +1,16 @@
---// SCHMECKT SILENT AIM – SAFE + FOV‑SLIDER LINKS UNTEN //--
+--// SCHMECKT SILENT AIM – SAFE + FOV‑SLIDER LINKS UNTEN + ANTI‑ANTI‑LOCK //--
 
-local Players         = game:GetService("Players")
-local RunService      = game:GetService("RunService")
-local Workspace       = game:GetService("Workspace")
-local CoreGui         = game:GetService("CoreGui")
-local Stats           = game:GetService("Stats")
-local UserInputService = game:GetService("UserInputService")
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local Workspace         = game:GetService("Workspace")
+local CoreGui           = game:GetService("CoreGui")
+local UserInputService  = game:GetService("UserInputService")
 
 local lp     = Players.LocalPlayer
 local mouse  = lp:GetMouse()
 local camera = Workspace.CurrentCamera
 
--- Verhindere doppelten Hook
+-- Doppel-Hook verhindern
 if getgenv().SchmecktSilentHooked then
     warn("[SchmecktSilent] already hooked")
     return
@@ -19,20 +18,20 @@ end
 getgenv().SchmecktSilentHooked = true
 
 --------------------------------------------------------------------
--- SETTINGS
+-- BASE SETTINGS
 --------------------------------------------------------------------
-local FOV_RADIUS      = 110        -- Start‑FOV
-local FOV_MIN         = 40         -- Minimaler FOV
-local FOV_MAX         = 260        -- Maximaler FOV
+local FOV_RADIUS        = 110        -- Start‑FOV
+local FOV_MIN           = 40         -- Minimaler FOV
+local FOV_MAX           = 260        -- Maximaler FOV
 
-local HIT_PART        = "Head"     -- "Head", "UpperTorso", "HumanoidRootPart"
+local HIT_PART          = "Head"     -- "Head", "UpperTorso", "HumanoidRootPart" (nur Start-Priorität)
 local ENABLE_PREDICTION = true
-local CHECK_WALLS     = true
+local CHECK_WALLS       = true
 
--- Prediction‑Tuning
-local BULLET_SPEED  = 400          -- Studs/sec (an dein Game anpassen)
-local BASE_TIME     = 0.03         -- Grunddelay
-local PING_WEIGHT   = 0.5          -- wie stark Ping mit reinzählt
+-- Prediction‑Tuning (Basis)
+local BULLET_SPEED  = 400            -- Studs/sec (optional, wenn Waffe speed-basiert simuliert)
+local BASE_TIME     = 0.03           -- Grunddelay
+local PING_WEIGHT   = 0.5            -- wie stark Ping mit reinzählt
 
 -- FOV‑Kreis Optik
 local SHOW_FOV_CIRCLE = true
@@ -40,14 +39,37 @@ local FOV_COLOR       = Color3.fromRGB(255, 255, 255)
 local FOV_THICKNESS   = 2
 
 --------------------------------------------------------------------
--- STATE: wird im RenderStep berechnet, Hook liest nur diese Variablen
+-- ANTI‑ANTI‑LOCK SETTINGS
 --------------------------------------------------------------------
-local SilentTargetChar  = nil      -- Character des Ziels
-local SilentTargetPart  = nil      -- Part des Ziels
-local SilentHitPosition = nil      -- Vector3 (mit Prediction)
+local AAL = {
+    UseMultiPart = true,                    -- Head > UpperTorso > LowerTorso > HRP
+    PartsOrder   = {"Head","UpperTorso","LowerTorso","HumanoidRootPart"},
+    StickyTime   = 0.25,                    -- hält Lock kurz bei Jitter
+    FOVExtraWhenLocked = 26,                -- FOV-Puffer wenn gelockt, damit kein Drop
+    UseVelocitySmoothing = true,            -- smoothed Velocity
+    SmoothWindow  = 8,                      -- wie viele Frames mitteln
+    SmoothAlpha   = 0.7,                    -- Gewicht aktuelle Velocity
+    UseAcceleration = true,                 -- Accel für noch bessere Prediction
+    AccelWeight   = 0.5,                    -- Gewicht Accel-Anteil
+    SoftAimLerp   = 0.35,                   -- sanftes Nachziehen des Zielpunkts
+}
 
 --------------------------------------------------------------------
--- UI: FOV‑Kreis + Highlight
+-- STATE / RESOLVER STATE
+--------------------------------------------------------------------
+local SilentTargetChar   = nil      -- Character des Ziels
+local SilentTargetPart   = nil      -- Part des Ziels
+local SilentHitPosition  = nil      -- Vector3 (mit Prediction)
+
+local lastTarget         = nil
+local lastSeenTime       = 0
+local lastAimPos         = nil
+
+-- History: pos/vel für Smoothing/Accel (pro Player)
+local Hist = {} -- [player] = {vels = {Vector3...}, times = {t...}}
+
+--------------------------------------------------------------------
+-- UI: alte FOV-Circles/Highlight killen
 --------------------------------------------------------------------
 do
     local oldFov = CoreGui:FindFirstChild("SchmecktSilentFOV")
@@ -94,10 +116,11 @@ local function updateFovCircle()
     fovCircle.Position = UDim2.new(0, mouse.X, 0, mouse.Y)
 end
 
--- Highlight
+-- Highlight (deutlich rot)
 local highlight = Instance.new("Highlight")
 highlight.Name = "SchmecktSilentHighlight"
-highlight.FillTransparency = 1
+highlight.FillColor = Color3.fromRGB(255, 70, 70)
+highlight.FillTransparency = 0.6
 highlight.OutlineColor = Color3.new(1, 1, 1)
 highlight.OutlineTransparency = 0
 highlight.Enabled = false
@@ -119,17 +142,13 @@ end
 local sliderFrame = Instance.new("Frame")
 sliderFrame.Name = "FOVSlider"
 sliderFrame.AnchorPoint = Vector2.new(0, 1)
-sliderFrame.Position = UDim2.new(0, 10, 1, -10)   -- links unten
+sliderFrame.Position = UDim2.new(0, 10, 1, -10)
 sliderFrame.Size = UDim2.new(0, 180, 0, 36)
 sliderFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 sliderFrame.BackgroundTransparency = 0.15
 sliderFrame.BorderSizePixel = 0
 sliderFrame.Parent = fovGui
-
-local sliderCorner = Instance.new("UICorner")
-sliderCorner.CornerRadius = UDim.new(0, 8)
-sliderCorner.Parent = sliderFrame
-
+Instance.new("UICorner", sliderFrame).CornerRadius = UDim.new(0, 8)
 local sliderStroke = Instance.new("UIStroke")
 sliderStroke.Color = Color3.fromRGB(255, 255, 255)
 sliderStroke.Thickness = 1
@@ -167,10 +186,7 @@ track.Size = UDim2.new(1, -80, 0, 6)
 track.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
 track.BorderSizePixel = 0
 track.Parent = sliderFrame
-
-local trackCorner = Instance.new("UICorner")
-trackCorner.CornerRadius = UDim.new(0, 3)
-trackCorner.Parent = track
+Instance.new("UICorner", track).CornerRadius = UDim.new(0, 3)
 
 local knob = Instance.new("Frame")
 knob.Name = "Knob"
@@ -179,12 +195,8 @@ knob.AnchorPoint = Vector2.new(0.5, 0.5)
 knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 knob.BorderSizePixel = 0
 knob.Parent = track
+Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
 
-local knobCorner = Instance.new("UICorner")
-knobCorner.CornerRadius = UDim.new(1, 0)
-knobCorner.Parent = knob
-
--- Startposition des Knobs anhand FOV
 local function radiusToAlpha()
     return (FOV_RADIUS - FOV_MIN) / (FOV_MAX - FOV_MIN)
 end
@@ -195,102 +207,114 @@ local function setFOVFromAlpha(a)
     FOV_RADIUS = math.floor(FOV_MIN + (FOV_MAX - FOV_MIN) * a + 0.5)
     valueLabel.Text = tostring(FOV_RADIUS)
 end
-
 setFOVFromAlpha(radiusToAlpha())
 
 local dragging = false
-
 local function getAlphaFromX(x)
     local absPos  = track.AbsolutePosition.X
     local absSize = track.AbsoluteSize.X
     if absSize <= 0 then return 0 end
     return (x - absPos) / absSize
 end
-
 track.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
         dragging = true
         setFOVFromAlpha(getAlphaFromX(input.Position.X))
     end
 end)
-
 knob.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or
-       input.UserInputType == Enum.UserInputType.Touch then
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
         dragging = true
     end
 end)
-
 UserInputService.InputChanged:Connect(function(input)
     if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch) then
+    or input.UserInputType == Enum.UserInputType.Touch) then
         setFOVFromAlpha(getAlphaFromX(input.Position.X))
     end
 end)
-
 UserInputService.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
+    or input.UserInputType == Enum.UserInputType.Touch then
         dragging = false
     end
 end)
 
 --------------------------------------------------------------------
--- PING / PREDICTION (läuft NUR im RenderStep, NICHT im Hook)
+-- ROBUST PING (ohne Plugin-Capability-Fehler)
 --------------------------------------------------------------------
-local function getPingSeconds()
-    local ok, pingMs = pcall(function()
-        local stat = Stats.Network.ServerStatsItem["Data Ping"]
-        if stat then
-            return stat:GetValue()
-        end
-        return 80
+local function getPingSeconds_safe()
+    local ok, ping = pcall(function()
+        return lp:GetNetworkPing()
     end)
-    if ok and pingMs then
-        return pingMs / 1000
-    end
-    return 0.08
+    return (ok and ping) and ping or 0.08
 end
 
-local function getPredictionTime(distance)
-    local t = BASE_TIME
-    if BULLET_SPEED > 0 then
-        t = t + distance / BULLET_SPEED
+--------------------------------------------------------------------
+-- PREDICTION / RESOLVER
+--------------------------------------------------------------------
+local function estimateVelocitySmooth(plr, currentVel)
+    if not AAL.UseVelocitySmoothing then
+        return currentVel
     end
-    t = t + getPingSeconds() * PING_WEIGHT
-    if t < 0.01 then t = 0.01 end
-    if t > 0.4  then t = 0.4  end
-    return t
+    Hist[plr] = Hist[plr] or {vels={}, times={}}
+    local h = Hist[plr]
+    table.insert(h.vels, currentVel)
+    table.insert(h.times, tick())
+    if #h.vels > AAL.SmoothWindow then
+        table.remove(h.vels, 1)
+        table.remove(h.times, 1)
+    end
+    local sum = Vector3.new()
+    for i=1,#h.vels do sum += h.vels[i] end
+    local avg = sum / math.max(#h.vels, 1)
+    -- Lerp Richtung “aktuellem” Wert
+    return avg:Lerp(currentVel, AAL.SmoothAlpha)
 end
 
-local function getPredictedPos(char, part)
+local function estimateAcceleration(plr)
+    if not AAL.UseAcceleration then return Vector3.new() end
+    local h = Hist[plr]
+    if not h or #h.vels < 2 then return Vector3.new() end
+    local v2, v1 = h.vels[#h.vels], h.vels[#h.vels-1]
+    local t2, t1 = h.times[#h.times], h.times[#h.times-1]
+    local dt = math.max(t2 - t1, 1/240)
+    return (v2 - v1) / dt
+end
+
+local function getPredictedPos_resolved(plr, char, part)
     if not ENABLE_PREDICTION then
         return part.Position
     end
-
     camera = Workspace.CurrentCamera or camera
-    if not camera or not part then
-        return part.Position
-    end
-
     local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then
-        return part.Position
+    local vel = hrp and (hrp.AssemblyLinearVelocity or hrp.Velocity) or Vector3.new()
+    vel = estimateVelocitySmooth(plr, vel)
+
+    local dist = (part.Position - camera.CFrame.Position).Magnitude
+    -- Alternative Prediction: aus Ping (robust)
+    local tPing = getPingSeconds_safe() * PING_WEIGHT
+    local tBall = (BULLET_SPEED > 0) and (BASE_TIME + dist / BULLET_SPEED) or BASE_TIME
+    local t = tBall + tPing
+    t = math.clamp(t, 0.01, 0.4)
+
+    local accel = estimateAcceleration(plr) * (AAL.AccelWeight)
+    local predicted = part.Position + vel * t + 0.5 * accel * (t * t)
+
+    -- Soft aim (sanfter Übergang)
+    if lastAimPos then
+        predicted = lastAimPos:Lerp(predicted, AAL.SoftAimLerp)
     end
-
-    local vel      = hrp.AssemblyLinearVelocity or hrp.Velocity
-    local distance = (part.Position - camera.CFrame.Position).Magnitude
-    local t        = getPredictionTime(distance)
-
-    return part.Position + vel * t
+    lastAimPos = predicted
+    return predicted
 end
 
 --------------------------------------------------------------------
--- WALLCHECK
+-- WALLCHECK (Cloak‑Bypass bleibt)
 --------------------------------------------------------------------
 local function isVisible(char, part)
     if not CHECK_WALLS then return true end
-
     camera = Workspace.CurrentCamera or camera
     if not camera or not part then return false end
 
@@ -303,17 +327,30 @@ local function isVisible(char, part)
     params.IgnoreWater = true
 
     local result = Workspace:Raycast(origin, direction, params)
-    if not result then
-        return true
-    end
-    if result.Instance and result.Instance:IsDescendantOf(char) then
-        return true
-    end
+    if not result then return true end
+    if result.Instance and result.Instance:IsDescendantOf(char) then return true end
     return false
 end
 
 --------------------------------------------------------------------
--- TARGET‑SUCHE (läuft NUR im RenderStep)
+-- PART-SELEKTOR MIT FALLBACK (AAL.UseMultiPart)
+--------------------------------------------------------------------
+local function pickBestPart(char)
+    if not AAL.UseMultiPart then
+        return char:FindFirstChild(HIT_PART)
+    end
+    for _, name in ipairs(AAL.PartsOrder) do
+        local p = char:FindFirstChild(name)
+        if p and isVisible(char, p) then
+            return p
+        end
+    end
+    -- Kein sichtbarer? nimm HEAD/HRP egal Sicht (zur Not)
+    return char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+end
+
+--------------------------------------------------------------------
+-- TARGET‑SUCHE (mit Sticky & FOV‑Puffer)
 --------------------------------------------------------------------
 local function findBestTarget()
     camera = Workspace.CurrentCamera or camera
@@ -321,68 +358,93 @@ local function findBestTarget()
         SilentTargetChar  = nil
         SilentTargetPart  = nil
         SilentHitPosition = nil
+        lastTarget        = nil
         return
     end
 
     local bestChar, bestPart, bestPos
-    local shortest = FOV_RADIUS
+    local maxFOV = FOV_RADIUS
+    if lastTarget then
+        -- FOV-Puffer wenn gelockt (Anti‑Jitter/Anti‑Lock)
+        maxFOV = FOV_RADIUS + AAL.FOVExtraWhenLocked
+    end
+
+    local shortest = maxFOV
     local mousePos = Vector2.new(mouse.X, mouse.Y)
 
+    -- Kandidaten scannen
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= lp and plr.Character then
             local char = plr.Character
             local hum  = char:FindFirstChildOfClass("Humanoid")
-            local part = char:FindFirstChild(HIT_PART)
-
-            if hum and hum.Health > 0 and part then
-                local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
-                if onScreen and isVisible(char, part) then
-                    local d2 = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
-                    if d2 < shortest then
-                        shortest = d2
-                        bestChar = char
-                        bestPart = part
+            if hum and hum.Health > 0 then
+                local part = pickBestPart(char)
+                if part then
+                    local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
+                    if onScreen and isVisible(char, part) then
+                        local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+                        if dist < shortest then
+                            shortest = dist
+                            bestChar = char
+                            bestPart = part
+                        end
                     end
                 end
             end
         end
     end
 
+    -- Sticky: wenn nichts gefunden, aber letztes Ziel kürzlich gesehen
+    if (not bestChar) and lastTarget and (tick() - lastSeenTime <= AAL.StickyTime) then
+        if lastTarget.Character then
+            bestChar = lastTarget.Character
+            bestPart = pickBestPart(bestChar)
+        end
+    end
+
     if bestChar and bestPart then
-        bestPos = getPredictedPos(bestChar, bestPart)
+        local ownerPlr = Players:GetPlayerFromCharacter(bestChar)
+        local aimPos = getPredictedPos_resolved(ownerPlr, bestChar, bestPart)
         SilentTargetChar  = bestChar
         SilentTargetPart  = bestPart
-        SilentHitPosition = bestPos
+        SilentHitPosition = aimPos
+        lastTarget        = ownerPlr
+        lastSeenTime      = tick()
     else
         SilentTargetChar  = nil
         SilentTargetPart  = nil
         SilentHitPosition = nil
+        -- lastTarget bleibt (für Sticky-Fenster), lastSeenTime bleibt
     end
 end
 
 --------------------------------------------------------------------
--- __index‑HOOK: liest NUR vorberechnete Werte
+-- __index‑HOOK: liest NUR vorberechnete Werte (kein Kamera-Freeze)
 --------------------------------------------------------------------
-local mt = getrawmetatable(game)
-setreadonly(mt, false)
-local oldIndex = mt.__index
-
-mt.__index = function(t, k)
-    if t == mouse and (k == "Hit" or k == "Target") then
-        if SilentTargetPart and SilentHitPosition then
-            if k == "Hit" then
-                return CFrame.new(SilentHitPosition)
-            else
-                return SilentTargetPart
+do
+    local ok, mt = pcall(getrawmetatable, game)
+    if ok and mt then
+        local ro = (make_writeable or setreadonly)
+        if setreadonly then pcall(setreadonly, mt, false) end
+        local oldIndex = mt.__index
+        mt.__index = function(t, k)
+            if t == mouse and (k == "Hit" or k == "Target") then
+                if SilentTargetPart and SilentHitPosition then
+                    if k == "Hit" then
+                        return CFrame.new(SilentHitPosition)
+                    else
+                        return SilentTargetPart
+                    end
+                end
             end
+            return oldIndex(t, k)
         end
+        -- kein readonly zurücksetzen (wie in deinem Original)
     end
-    return oldIndex(t, k)
 end
--- kein setreadonly(mt,true), wie in deinen alten Scripts
 
 --------------------------------------------------------------------
--- RenderStepped: Kreis, Target & Highlight updaten
+-- RenderStepped Loop
 --------------------------------------------------------------------
 RunService.RenderStepped:Connect(function()
     updateFovCircle()
