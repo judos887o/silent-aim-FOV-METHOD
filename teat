@@ -10,9 +10,8 @@ local Camera = Workspace.CurrentCamera
 
 local Shared = getgenv().SchmecktHubPC or {}
 getgenv().SchmecktHubPC = Shared
-Shared.SilentAim = true
 
-local key = "SilentAim"
+local key = "SilentAimFOV"
 if Shared.Connections and Shared.Connections[key] then
     for _, c in pairs(Shared.Connections[key]) do pcall(function() c:Disconnect() end) end
 end
@@ -197,11 +196,15 @@ end)
 
 table.insert(Shared.Connections[key], RunService.RenderStepped:Connect(function()
     Camera = Workspace.CurrentCamera
-    if not Shared.SilentAim then
+    
+    -- EINZIGE ÄNDERUNG: Prüft auch die Methode
+    if not Shared.SilentAim or Shared.SilentAimMethod ~= "FOV" then
         UI.Enabled = false
         HL.Enabled = false
+        Target, Part, Pos = nil, nil, nil
         return
     end
+    
     UI.Enabled = true
     local mp = UserInputService:GetMouseLocation()
     Circle.Position = UDim2.new(0, mp.X, 0, mp.Y)
@@ -224,7 +227,9 @@ setreadonly(mt, false)
 mt.__namecall = newcclosure(function(self, ...)
     local m = getnamecallmethod()
     local a = {...}
-    if Shared.SilentAim and Target and Pos then
+    
+    -- EINZIGE ÄNDERUNG: Prüft auch die Methode
+    if Shared.SilentAim and Shared.SilentAimMethod == "FOV" and Target and Pos then
         if m == "Raycast" and self == Workspace then
             if a[1] and a[2] then
                 a[2] = (Pos - a[1]).Unit * a[2].Magnitude
@@ -243,7 +248,8 @@ mt.__namecall = newcclosure(function(self, ...)
 end)
 
 mt.__index = newcclosure(function(self, k)
-    if Shared.SilentAim and Target and Pos and self == Mouse then
+    -- EINZIGE ÄNDERUNG: Prüft auch die Methode
+    if Shared.SilentAim and Shared.SilentAimMethod == "FOV" and Target and Pos and self == Mouse then
         if k == "Hit" then return CFrame.new(Pos) end
         if k == "Target" then return Part end
         if k == "X" then return Pos.X end
