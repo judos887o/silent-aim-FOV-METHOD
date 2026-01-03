@@ -27,7 +27,7 @@ local FOV = 130
 local PREDICTION = 0.136
 local Target, Part, Pos = nil, nil, nil
 local IsGunEquipped = false
-local IsStomping = false -- Neu: Stomp Status
+local IsStomping = false
 
 local Bones = {"HumanoidRootPart", "UpperTorso", "Head"}
 
@@ -138,7 +138,6 @@ table.insert(Shared.Connections[key], UserInputService.InputChanged:Connect(func
     end
 end))
 
--- STOMP KEY DETECTION
 table.insert(Shared.Connections[key], UserInputService.InputBegan:Connect(function(i, gp)
     if not gp and i.KeyCode == Enum.KeyCode.E then
         IsStomping = true
@@ -254,7 +253,6 @@ table.insert(Shared.Connections[key], RunService.RenderStepped:Connect(function(
     local mousePos = UserInputService:GetMouseLocation()
     Circle.Position = UDim2.new(0, mousePos.X, 0, mousePos.Y)
     
-    -- Wenn Stompen gedrückt wird: Target resetten und Gun ignorieren
     if IsStomping then
         Target, Part, Pos = nil, nil, nil
         Stroke.Color = Color3.fromRGB(255, 255, 255)
