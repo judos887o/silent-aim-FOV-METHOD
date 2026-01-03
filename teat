@@ -3,13 +3,18 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
+local Stats = game:GetService("Stats")
 
 local LP = Players.LocalPlayer
 local Mouse = LP:GetMouse()
 local Camera = Workspace.CurrentCamera
+local CachedMouse = LP:GetMouse()
 
 local Shared = getgenv().SchmecktHubPC or {}
 getgenv().SchmecktHubPC = Shared
+
+Shared.SilentAim = true
+Shared.SilentAimMethod = "FOV"
 
 local key = "SilentAimFOV"
 if Shared.Connections and Shared.Connections[key] then
@@ -19,14 +24,14 @@ Shared.Connections = Shared.Connections or {}
 Shared.Connections[key] = {}
 
 local FOV = 130
+local PREDICTION = 0.136
 local Target, Part, Pos = nil, nil, nil
-local Data = {}
+local IsGunEquipped = false
 
-local Bones = {"Head", "HumanoidRootPart", "UpperTorso", "LowerTorso", "Torso"}
+local Bones = {"HumanoidRootPart", "UpperTorso", "Head"}
 
 pcall(function()
     if CoreGui:FindFirstChild("SchmecktSilent") then CoreGui.SchmecktSilent:Destroy() end
-    if Workspace:FindFirstChild("SilentAimHL") then Workspace.SilentAimHL:Destroy() end
 end)
 
 local UI = Instance.new("ScreenGui")
@@ -47,14 +52,14 @@ Stroke.Color = Color3.fromRGB(255, 255, 255)
 Stroke.Thickness = 1.5
 Stroke.Transparency = 0.3
 
-local HL = Instance.new("Highlight")
-HL.Name = "SilentAimHL"
-HL.FillColor = Color3.fromRGB(255, 50, 50)
-HL.FillTransparency = 0.65
-HL.OutlineColor = Color3.fromRGB(255, 255, 255)
-HL.OutlineTransparency = 0
-HL.Enabled = false
-HL.Parent = Workspace
+local TargetMarker = Instance.new("Frame")
+TargetMarker.Size = UDim2.new(0, 10, 0, 10)
+TargetMarker.AnchorPoint = Vector2.new(0.5, 0.5)
+TargetMarker.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+TargetMarker.BorderSizePixel = 0
+TargetMarker.Visible = false
+TargetMarker.Parent = UI
+Instance.new("UICorner", TargetMarker).CornerRadius = UDim.new(1, 0)
 
 local Slider = Instance.new("Frame")
 Slider.AnchorPoint = Vector2.new(0, 1)
@@ -94,128 +99,169 @@ Instance.new("UICorner", Knob).CornerRadius = UDim.new(1, 0)
 
 local Dragging = false
 
-table.insert(Shared.Connections[key], Track.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then Dragging = true end end))
-table.insert(Shared.Connections[key], Knob.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then Dragging = true end end))
-table.insert(Shared.Connections[key], UserInputService.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then Dragging = false end end))
-table.insert(Shared.Connections[key], UserInputService.InputChanged:Connect(function(i)
-    if Dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
-        local a = math.clamp((i.Position.X - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1)
-        FOV = math.floor(40 + 260 * a)
-        Knob.Position = UDim2.new(a, 0, 0.5, 0)
-        Circle.Size = UDim2.new(0, FOV * 2, 0, FOV * 2)
-        Label.Text = "FOV: " .. FOV
+local function UpdateSlider(input)
+    if Track.AbsoluteSize.X == 0 then return end
+    
+    local pos = math.clamp((input.Position.X - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1)
+    local newFOV = math.floor(40 + (260 * pos))
+    
+    FOV = newFOV
+    Knob.Position = UDim2.new(pos, 0, 0.5, 0)
+    Circle.Size = UDim2.new(0, FOV * 2, 0, FOV * 2)
+    Label.Text = "FOV: " .. FOV
+end
+
+table.insert(Shared.Connections[key], Track.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+        Dragging = true
+        UpdateSlider(i)
     end
 end))
 
+table.insert(Shared.Connections[key], Knob.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+        Dragging = true
+        UpdateSlider(i)
+    end
+end))
+
+table.insert(Shared.Connections[key], UserInputService.InputEnded:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+        Dragging = false
+    end
+end))
+
+table.insert(Shared.Connections[key], UserInputService.InputChanged:Connect(function(i)
+    if Dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
+        UpdateSlider(i)
+    end
+end))
+
+local function CheckGun()
+    local char = LP.Character
+    if not char then return false end
+    local tool = char:FindFirstChildOfClass("Tool")
+    if not tool then return false end
+    if tool:FindFirstChild("Handle") and not tool.Name:lower():find("wallet") and not tool.Name:lower():find("phone") then
+        return true
+    end
+    return false
+end
+
+local function IsKnocked(char)
+    if not char then return true end
+    local bodyEffects = char:FindFirstChild("BodyEffects")
+    if bodyEffects then
+        local ko = bodyEffects:FindFirstChild("K.O")
+        if ko and ko.Value == true then return true end
+    end
+    if char:FindFirstChild("GRABBING_CONSTRAINT") then return true end
+    local hum = char:FindFirstChild("Humanoid")
+    if hum and hum.Health < 2 then return true end
+    return false
+end
+
 local function Visible(char, part)
-    local cam = Camera
     local myChar = LP.Character
-    if not cam or not myChar or not part then return false end
-    local origin = cam.CFrame.Position
-    local dir = (part.Position - origin)
+    if not myChar or not part then return false end
+    local origin = Camera.CFrame.Position
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
     params.FilterDescendantsInstances = {myChar, char}
-    local ray = Workspace:Raycast(origin, dir, params)
+    local ray = Workspace:Raycast(origin, (part.Position - origin), params)
     return ray == nil
 end
 
-local function GetData(plr, hrp)
-    local t = tick()
-    local v = hrp.AssemblyLinearVelocity or Vector3.zero
-    if not Data[plr] then
-        Data[plr] = {vel = {}, lastVel = v, lastT = t}
+local function Predict(plr, bone, hrp)
+    local vel = hrp.AssemblyLinearVelocity
+    local hum = plr.Character:FindFirstChild("Humanoid")
+    
+    if vel.Magnitude < 0.1 then return bone.Position end
+    
+    if hum and hum.MoveDirection.Magnitude > 0 then
+        return bone.Position + (hum.MoveDirection * 16 * PREDICTION)
     end
-    local d = Data[plr]
-    local dt = t - d.lastT
-    if dt > 0.016 then
-        table.insert(d.vel, 1, v)
-        if #d.vel > 8 then table.remove(d.vel) end
-        d.lastVel = v
-        d.lastT = t
+    
+    if vel.Y < -20 then
+        return bone.Position + (Vector3.new(vel.X, 0, vel.Z) * PREDICTION)
     end
-    return d
-end
-
-local function Predict(plr, bone, hrp, dist)
-    local d = GetData(plr, hrp)
-    local avgVel = Vector3.zero
-    if #d.vel > 0 then
-        for _, v in ipairs(d.vel) do avgVel = avgVel + v end
-        avgVel = avgVel / #d.vel
-    end
-    if avgVel.Magnitude < 0.5 then return bone.Position end
-    local ping = 0.05
-    pcall(function() ping = LP:GetNetworkPing() end)
-    local t = (dist / 900) + (ping * 1.1)
-    local pred = bone.Position + (avgVel * t)
-    pred = Vector3.new(pred.X, math.clamp(pred.Y, hrp.Position.Y - 3, hrp.Position.Y + 3.5), pred.Z)
-    return pred
+    
+    return bone.Position + (vel * PREDICTION)
 end
 
 local function GetBestTarget()
-    local cam = Camera
-    if not cam then return nil, nil, nil end
     local mp = UserInputService:GetMouseLocation()
     local best = {score = math.huge, char = nil, part = nil, pos = nil}
+    
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr == LP then continue end
+        
         local char = plr.Character
         if not char then continue end
-        local hum = char:FindFirstChild("Humanoid")
-        if not hum or hum.Health <= 0 then continue end
+        
+        if IsKnocked(char) then continue end
+        
         local hrp = char:FindFirstChild("HumanoidRootPart")
         if not hrp then continue end
+        
         for _, boneName in ipairs(Bones) do
             local bone = char:FindFirstChild(boneName)
             if not bone then continue end
-            local sp, onScreen = cam:WorldToViewportPoint(bone.Position)
+            
+            local sp, onScreen = Camera:WorldToViewportPoint(bone.Position)
             if not onScreen then continue end
+            
             local screenDist = (Vector2.new(sp.X, sp.Y) - mp).Magnitude
             if screenDist > FOV then continue end
+            
             if not Visible(char, bone) then continue end
+            
             if screenDist < best.score then
                 best.score = screenDist
                 best.char = char
                 best.part = bone
-                best.pos = Predict(plr, bone, hrp, (bone.Position - cam.CFrame.Position).Magnitude)
+                best.pos = Predict(plr, bone, hrp)
             end
         end
     end
+    
     return best.char, best.part, best.pos
 end
 
-task.spawn(function()
-    while true do
-        task.wait(5)
-        for p in pairs(Data) do
-            if not p or not p.Parent then Data[p] = nil end
-        end
-    end
-end)
-
 table.insert(Shared.Connections[key], RunService.RenderStepped:Connect(function()
-    Camera = Workspace.CurrentCamera
-    
-    -- EINZIGE ÄNDERUNG: Prüft auch die Methode
     if not Shared.SilentAim or Shared.SilentAimMethod ~= "FOV" then
         UI.Enabled = false
-        HL.Enabled = false
         Target, Part, Pos = nil, nil, nil
+        IsGunEquipped = false
         return
     end
     
     UI.Enabled = true
-    local mp = UserInputService:GetMouseLocation()
-    Circle.Position = UDim2.new(0, mp.X, 0, mp.Y)
-    Target, Part, Pos = GetBestTarget()
-    if Target then
-        HL.Adornee = Target
-        HL.Enabled = true
-        Stroke.Color = Color3.fromRGB(255, 50, 50)
+    local mousePos = UserInputService:GetMouseLocation()
+    Circle.Position = UDim2.new(0, mousePos.X, 0, mousePos.Y)
+    
+    IsGunEquipped = CheckGun()
+    
+    if IsGunEquipped then
+        Target, Part, Pos = GetBestTarget()
+        if Target then
+            Stroke.Color = Color3.fromRGB(255, 50, 50)
+            
+            local screenPos, onScreen = Camera:WorldToViewportPoint(Part.Position)
+            if onScreen then
+                TargetMarker.Visible = true
+                TargetMarker.Position = UDim2.new(0, screenPos.X, 0, screenPos.Y)
+            else
+                TargetMarker.Visible = false
+            end
+        else
+            Stroke.Color = Color3.fromRGB(255, 255, 255)
+            TargetMarker.Visible = false
+        end
     else
-        HL.Enabled = false
+        Target, Part, Pos = nil, nil, nil
         Stroke.Color = Color3.fromRGB(255, 255, 255)
+        TargetMarker.Visible = false
     end
 end))
 
@@ -226,36 +272,32 @@ setreadonly(mt, false)
 
 mt.__namecall = newcclosure(function(self, ...)
     local m = getnamecallmethod()
-    local a = {...}
     
-    -- EINZIGE ÄNDERUNG: Prüft auch die Methode
-    if Shared.SilentAim and Shared.SilentAimMethod == "FOV" and Target and Pos then
+    if IsGunEquipped and Target and Pos then
         if m == "Raycast" and self == Workspace then
+            local a = {...}
             if a[1] and a[2] then
-                a[2] = (Pos - a[1]).Unit * a[2].Magnitude
-                return oldNc(self, unpack(a))
+                return oldNc(self, a[1], (Pos - a[1]).Unit * a[2].Magnitude, unpack(a, 3))
             end
         end
-        if self == Mouse then
+        
+        if self == CachedMouse then
             if m == "GetHit" then return CFrame.new(Pos) end
             if m == "GetTarget" then return Part end
-        end
-        if self == Camera and (m == "ViewportPointToRay" or m == "ScreenPointToRay") then
-            return Ray.new(Camera.CFrame.Position, (Pos - Camera.CFrame.Position).Unit)
         end
     end
     return oldNc(self, ...)
 end)
 
 mt.__index = newcclosure(function(self, k)
-    -- EINZIGE ÄNDERUNG: Prüft auch die Methode
-    if Shared.SilentAim and Shared.SilentAimMethod == "FOV" and Target and Pos and self == Mouse then
-        if k == "Hit" then return CFrame.new(Pos) end
-        if k == "Target" then return Part end
-        if k == "X" then return Pos.X end
-        if k == "Y" then return Pos.Y end
-        if k == "Z" then return Pos.Z end
-        if k == "UnitRay" then return Ray.new(Camera.CFrame.Position, (Pos - Camera.CFrame.Position).Unit) end
+    if IsGunEquipped and Target and Pos then
+        if self == CachedMouse then
+            if k == "Hit" then return CFrame.new(Pos) end
+            if k == "Target" then return Part end
+            if k == "X" then return Pos.X end
+            if k == "Y" then return Pos.Y end
+            if k == "Z" then return Pos.Z end
+        end
     end
     return oldIdx(self, k)
 end)
