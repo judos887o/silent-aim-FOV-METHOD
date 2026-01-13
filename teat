@@ -11,12 +11,11 @@ local Mouse = LP:GetMouse()
 local Camera = Workspace.CurrentCamera
 local CachedMouse = LP:GetMouse()
 
--- // LOOTEN CONFIG (Stabilized) //
 getgenv().Looten = {
     ['Silent'] = {
         Normal = {
             Enabled = true,
-            HitChance = 100, -- Auf 100 gesetzt gegen Flackern
+            HitChance = 100,
         },
         HitPart = {
             NearestPoint = true,
@@ -47,7 +46,6 @@ getgenv().Looten = {
     },
 }
 
--- Globale Looten Variablen
 getgenv().AGV = 0.5
 getgenv().WAGA = -20
 getgenv().DD = true
@@ -56,7 +54,6 @@ getgenv().DUG = true
 getgenv().UD = -30
 getgenv().DC = true
 
--- // CLEANUP OLD INSTANCES //
 if getgenv().SchmecktHubConnections then
     for _, c in pairs(getgenv().SchmecktHubConnections) do
         pcall(function() c:Disconnect() end)
@@ -75,7 +72,6 @@ Shared.SilentAim = true
 local Target, Part, Pos = nil, nil, nil
 local IsGunEquipped = false
 
--- // LOOTEN MATHEMATIK & LOGIK //
 
 local function IsPlayerValid(plr)
     if plr and plr.Character and plr.Character:FindFirstChild('HumanoidRootPart') and plr.Character:FindFirstChild('Humanoid') and plr.Character:FindFirstChild('Head') then
@@ -133,7 +129,6 @@ local function GetClosestBodyPart(character)
     return BodyPart
 end
 
--- // CORE ZIELFINDUNG (LOOTEN LOGIK) //
 local function GetBestTargetLooten()
     local FoundTarget, Closest = nil, math.huge
     local MousePos = UserInputService:GetMouseLocation() -- Besser als Mouse.X/Y für Silent Aim
@@ -168,14 +163,12 @@ local function GetBestTargetLooten()
     return FoundTarget
 end
 
--- // CORE PREDICTION (LOOTEN LOGIK) //
 local function CalculatePredictionLooten(TargetPlayer)
     if not IsPlayerValid(TargetPlayer) then return nil, nil end
 
     local TargetChar = TargetPlayer.Character
     local HitPartName = getgenv().Looten.Silent.HitPart.HitPart
     
-    -- Nearest Point Override
     if getgenv().Looten.Silent.HitPart.NearestPoint then
         local nearest = GetClosestBodyPart(TargetChar)
         if nearest then HitPartName = nearest.Name end
@@ -189,7 +182,6 @@ local function CalculatePredictionLooten(TargetPlayer)
     local TargetMov = TargetChar.Humanoid.MoveDirection
     local SilentPos = TargetCF.Position
 
-    -- Prediction Logic
     local usePrediction = false
     if getgenv().DD then
         local mag = TargetVel.magnitude
@@ -211,7 +203,6 @@ local function CalculatePredictionLooten(TargetPlayer)
     return SilentPos, TargetPart
 end
 
--- // UI ERSTELLUNG //
 
 local UI = Instance.new("ScreenGui")
 UI.Name = "SchmecktSilent"
@@ -240,7 +231,6 @@ TargetMarker.Visible = false
 TargetMarker.Parent = UI
 Instance.new("UICorner", TargetMarker).CornerRadius = UDim.new(1, 0)
 
--- Slider
 local Slider = Instance.new("Frame")
 Slider.AnchorPoint = Vector2.new(0, 1)
 Slider.Position = UDim2.new(0, 10, 1, -10)
@@ -274,7 +264,6 @@ Knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 Knob.Parent = Track
 Instance.new("UICorner", Knob).CornerRadius = UDim.new(1, 0)
 
--- Slider Logic
 local Dragging = false
 local function UpdateSlider(input)
     if Track.AbsoluteSize.X == 0 then return end
@@ -314,7 +303,6 @@ local function CheckGun()
     return false
 end
 
--- // MAIN LOOP (FIXED) //
 
 table.insert(getgenv().SchmecktHubConnections, RunService.RenderStepped:Connect(function()
     if not Shared.SilentAim then
@@ -328,7 +316,6 @@ table.insert(getgenv().SchmecktHubConnections, RunService.RenderStepped:Connect(
     
     IsGunEquipped = CheckGun()
     
-    -- Reset Target
     Target = nil
     Pos = nil
     Part = nil
@@ -336,18 +323,15 @@ table.insert(getgenv().SchmecktHubConnections, RunService.RenderStepped:Connect(
     Stroke.Color = Color3.fromRGB(255, 255, 255)
 
     if IsGunEquipped then
-        -- 1. Find Target
         local Found = GetBestTargetLooten()
         
         if Found then
             Target = Found
-            -- 2. Predict Position
             local pPos, pPart = CalculatePredictionLooten(Target)
             if pPos then
                 Pos = pPos
                 Part = pPart
                 
-                -- Update Marker
                 local screenPos, onScreen = Camera:WorldToViewportPoint(Pos)
                 if onScreen then
                     TargetMarker.Visible = true
@@ -359,7 +343,6 @@ table.insert(getgenv().SchmecktHubConnections, RunService.RenderStepped:Connect(
     end
 end))
 
--- // HOOKS //
 
 local mt = getrawmetatable(game)
 local oldNc = mt.__namecall
