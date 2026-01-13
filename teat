@@ -3,37 +3,215 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
-local Stats = game:GetService("Stats")
+local GuiService = game:GetService("GuiService")
 
 local LP = Players.LocalPlayer
+local Client = LP 
 local Mouse = LP:GetMouse()
 local Camera = Workspace.CurrentCamera
 local CachedMouse = LP:GetMouse()
 
-local Shared = getgenv().SchmecktHubPC or {}
-getgenv().SchmecktHubPC = Shared
+-- // LOOTEN CONFIG (Stabilized) //
+getgenv().Looten = {
+    ['Silent'] = {
+        Normal = {
+            Enabled = true,
+            HitChance = 100, -- Auf 100 gesetzt gegen Flackern
+        },
+        HitPart = {
+            NearestPoint = true,
+            HitPart = 'HumanoidRootPart',
+        },
+        Prediction = {
+            Enabled = true,
+            AutoMated = false,
+            Prediction = 0.135,
+        },
+    },
+    ['Fov'] = {
+        SilentAim = {
+            Show = true,
+            Use_Radius = true,
+            Radius = 130, 
+        },
+    },
+    ['Adjustment'] = {
+        ['Checks'] = {
+            Resolver = true,
+            Wall_Check = true, 
+            Disable_Ground_Shots = true,
+            Knocked_Check = true,
+            NoGroundShots = true,
+            Crew_Check = false,
+        },
+    },
+}
 
-Shared.SilentAim = true
-Shared.SilentAimMethod = "FOV"
+-- Globale Looten Variablen
+getgenv().AGV = 0.5
+getgenv().WAGA = -20
+getgenv().DD = true
+getgenv().DV = 86
+getgenv().DUG = true
+getgenv().UD = -30
+getgenv().DC = true
 
-local key = "SilentAimFOV"
-if Shared.Connections and Shared.Connections[key] then
-    for _, c in pairs(Shared.Connections[key]) do pcall(function() c:Disconnect() end) end
+-- // CLEANUP OLD INSTANCES //
+if getgenv().SchmecktHubConnections then
+    for _, c in pairs(getgenv().SchmecktHubConnections) do
+        pcall(function() c:Disconnect() end)
+    end
 end
-Shared.Connections = Shared.Connections or {}
-Shared.Connections[key] = {}
-
-local FOV = 130
-local PREDICTION = 0.136
-local Target, Part, Pos = nil, nil, nil
-local IsGunEquipped = false
-local IsStomping = false
-
-local Bones = {"HumanoidRootPart", "UpperTorso", "Head"}
+getgenv().SchmecktHubConnections = {}
 
 pcall(function()
     if CoreGui:FindFirstChild("SchmecktSilent") then CoreGui.SchmecktSilent:Destroy() end
 end)
+
+local Shared = getgenv().SchmecktHubPC or {}
+getgenv().SchmecktHubPC = Shared
+Shared.SilentAim = true
+
+local Target, Part, Pos = nil, nil, nil
+local IsGunEquipped = false
+
+-- // LOOTEN MATHEMATIK & LOGIK //
+
+local function IsPlayerValid(plr)
+    if plr and plr.Character and plr.Character:FindFirstChild('HumanoidRootPart') and plr.Character:FindFirstChild('Humanoid') and plr.Character:FindFirstChild('Head') then
+        return true
+    end
+    return false
+end
+
+local function GetScreenPos(Object)
+    local pos = Camera:WorldToScreenPoint(Object.Position)
+    return pos
+end
+
+local function IsVisible(Part, PartDescendant)
+    if not getgenv().Looten.Adjustment.Checks.Wall_Check then return true end
+    
+    local Character = Client.Character or Client.CharacterAdded:Wait()
+    local Origin = Camera.CFrame.Position
+    local _, OnScreen = Camera:WorldToViewportPoint(Part.Position)
+
+    if OnScreen then
+        local raycastParams = RaycastParams.new()
+        raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+        raycastParams.FilterDescendantsInstances = { Character, Camera }
+
+        local Result = Workspace:Raycast(Origin, Part.Position - Origin, raycastParams)
+
+        if Result then
+            local PartHit = Result.Instance
+            local Visible = (not PartHit or PartHit:IsDescendantOf(PartDescendant))
+            return Visible
+        end
+    end
+    return false
+end
+
+local function GetClosestBodyPart(character)
+    local ClosestDistance = math.huge
+    local BodyPart = nil
+    
+    if character then
+        for _, x in pairs(character:GetChildren()) do
+            if x:IsA("BasePart") and (x.Name == "Head" or x.Name == "HumanoidRootPart" or x.Name == "UpperTorso" or x.Name == "LowerTorso") then
+                local Position, OnScreen = Camera:WorldToViewportPoint(x.Position)
+                if OnScreen then
+                    local Distance = (Vector2.new(Mouse.X, Mouse.Y) - Vector2.new(Position.X, Position.Y)).Magnitude
+                    if Distance < ClosestDistance then
+                        ClosestDistance = Distance
+                        BodyPart = x
+                    end
+                end
+            end
+        end
+    end
+    return BodyPart
+end
+
+-- // CORE ZIELFINDUNG (LOOTEN LOGIK) //
+local function GetBestTargetLooten()
+    local FoundTarget, Closest = nil, math.huge
+    local MousePos = UserInputService:GetMouseLocation() -- Besser als Mouse.X/Y für Silent Aim
+
+    for _, v in pairs(Players:GetPlayers()) do
+        if v ~= Client and v.Character and v.Character:FindFirstChild('HumanoidRootPart') then
+            -- Checks
+            local char = v.Character
+            if getgenv().Looten.Adjustment.Checks.Knocked_Check then
+                local be = char:FindFirstChild("BodyEffects")
+                if be and be:FindFirstChild("K.O") and be["K.O"].Value then continue end
+                if char:FindFirstChild("GRABBING_CONSTRAINT") then continue end
+            end
+
+            if getgenv().Looten.Adjustment.Checks.Crew_Check then
+                -- Crew logic here if needed
+            end
+
+            local AimPart = char.HumanoidRootPart
+            if IsVisible(AimPart, char) then
+                local Pos, OnScreen = Camera:WorldToViewportPoint(AimPart.Position)
+                if OnScreen then
+                    local Distance = (Vector2.new(MousePos.X, MousePos.Y) - Vector2.new(Pos.X, Pos.Y)).Magnitude
+                    if Distance < Closest and Distance <= getgenv().Looten.Fov.SilentAim.Radius then
+                        Closest = Distance
+                        FoundTarget = v
+                    end
+                end
+            end
+        end
+    end
+    return FoundTarget
+end
+
+-- // CORE PREDICTION (LOOTEN LOGIK) //
+local function CalculatePredictionLooten(TargetPlayer)
+    if not IsPlayerValid(TargetPlayer) then return nil, nil end
+
+    local TargetChar = TargetPlayer.Character
+    local HitPartName = getgenv().Looten.Silent.HitPart.HitPart
+    
+    -- Nearest Point Override
+    if getgenv().Looten.Silent.HitPart.NearestPoint then
+        local nearest = GetClosestBodyPart(TargetChar)
+        if nearest then HitPartName = nearest.Name end
+    end
+
+    local TargetPart = TargetChar:FindFirstChild(HitPartName)
+    if not TargetPart then return nil, nil end
+
+    local TargetCF = TargetPart.CFrame
+    local TargetVel = TargetChar.HumanoidRootPart.Velocity
+    local TargetMov = TargetChar.Humanoid.MoveDirection
+    local SilentPos = TargetCF.Position
+
+    -- Prediction Logic
+    local usePrediction = false
+    if getgenv().DD then
+        local mag = TargetVel.magnitude
+        if mag > getgenv().DV then usePrediction = true
+        elseif mag < 1 and TargetMov.magnitude > 0.01 then usePrediction = true
+        elseif mag > 5 and TargetMov.magnitude < 0.01 then usePrediction = true
+        end
+    end
+
+    if getgenv().Looten.Adjustment.Checks.NoGroundShots and TargetVel.Y < getgenv().WAGA then
+        SilentPos = TargetCF.Position + (Vector3.new(TargetVel.X, (TargetVel.Y * getgenv().AGV), TargetVel.Z) * getgenv().Looten.Silent.Prediction.Prediction)
+    elseif getgenv().DUG and TargetVel.Y < getgenv().UD then
+        SilentPos = TargetCF.Position + (Vector3.new(TargetVel.X, 0, TargetVel.Z) * getgenv().Looten.Silent.Prediction.Prediction)
+    elseif usePrediction or getgenv().Looten.Silent.Prediction.Enabled then
+        -- Standard Prediction
+        SilentPos = TargetCF.Position + (TargetVel * getgenv().Looten.Silent.Prediction.Prediction)
+    end
+
+    return SilentPos, TargetPart
+end
+
+-- // UI ERSTELLUNG //
 
 local UI = Instance.new("ScreenGui")
 UI.Name = "SchmecktSilent"
@@ -45,7 +223,7 @@ UI.Parent = CoreGui
 local Circle = Instance.new("Frame")
 Circle.AnchorPoint = Vector2.new(0.5, 0.5)
 Circle.BackgroundTransparency = 1
-Circle.Size = UDim2.new(0, FOV * 2, 0, FOV * 2)
+Circle.Size = UDim2.new(0, getgenv().Looten.Fov.SilentAim.Radius * 2, 0, getgenv().Looten.Fov.SilentAim.Radius * 2)
 Circle.Parent = UI
 Instance.new("UICorner", Circle).CornerRadius = UDim.new(1, 0)
 local Stroke = Instance.new("UIStroke", Circle)
@@ -54,7 +232,7 @@ Stroke.Thickness = 1.5
 Stroke.Transparency = 0.3
 
 local TargetMarker = Instance.new("Frame")
-TargetMarker.Size = UDim2.new(0, 10, 0, 10)
+TargetMarker.Size = UDim2.new(0, 8, 0, 8)
 TargetMarker.AnchorPoint = Vector2.new(0.5, 0.5)
 TargetMarker.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
 TargetMarker.BorderSizePixel = 0
@@ -62,19 +240,19 @@ TargetMarker.Visible = false
 TargetMarker.Parent = UI
 Instance.new("UICorner", TargetMarker).CornerRadius = UDim.new(1, 0)
 
+-- Slider
 local Slider = Instance.new("Frame")
 Slider.AnchorPoint = Vector2.new(0, 1)
 Slider.Position = UDim2.new(0, 10, 1, -10)
 Slider.Size = UDim2.new(0, 180, 0, 32)
 Slider.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-Slider.BorderSizePixel = 0
 Slider.Parent = UI
 Instance.new("UICorner", Slider).CornerRadius = UDim.new(0, 8)
 
 local Label = Instance.new("TextLabel")
 Label.Size = UDim2.new(1, 0, 1, 0)
 Label.BackgroundTransparency = 1
-Label.Text = "FOV: " .. FOV
+Label.Text = "FOV: " .. getgenv().Looten.Fov.SilentAim.Radius
 Label.TextColor3 = Color3.fromRGB(255, 255, 255)
 Label.Font = Enum.Font.GothamBold
 Label.TextSize = 13
@@ -85,69 +263,44 @@ Track.AnchorPoint = Vector2.new(0.5, 0.5)
 Track.Position = UDim2.new(0.5, 0, 0.5, 0)
 Track.Size = UDim2.new(0.55, 0, 0, 4)
 Track.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-Track.BorderSizePixel = 0
 Track.Parent = Slider
 Instance.new("UICorner", Track).CornerRadius = UDim.new(1, 0)
 
 local Knob = Instance.new("Frame")
 Knob.Size = UDim2.new(0, 12, 0, 12)
 Knob.AnchorPoint = Vector2.new(0.5, 0.5)
-Knob.Position = UDim2.new((FOV - 40) / 260, 0, 0.5, 0)
+Knob.Position = UDim2.new((getgenv().Looten.Fov.SilentAim.Radius - 40) / 260, 0, 0.5, 0)
 Knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-Knob.BorderSizePixel = 0
 Knob.Parent = Track
 Instance.new("UICorner", Knob).CornerRadius = UDim.new(1, 0)
 
+-- Slider Logic
 local Dragging = false
-
 local function UpdateSlider(input)
     if Track.AbsoluteSize.X == 0 then return end
-    
     local pos = math.clamp((input.Position.X - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1)
     local newFOV = math.floor(40 + (260 * pos))
-    
-    FOV = newFOV
+    getgenv().Looten.Fov.SilentAim.Radius = newFOV
     Knob.Position = UDim2.new(pos, 0, 0.5, 0)
-    Circle.Size = UDim2.new(0, FOV * 2, 0, FOV * 2)
-    Label.Text = "FOV: " .. FOV
+    Circle.Size = UDim2.new(0, newFOV * 2, 0, newFOV * 2)
+    Label.Text = "FOV: " .. newFOV
 end
 
-table.insert(Shared.Connections[key], Track.InputBegan:Connect(function(i)
+table.insert(getgenv().SchmecktHubConnections, Track.InputBegan:Connect(function(i)
     if i.UserInputType == Enum.UserInputType.MouseButton1 then
-        Dragging = true
-        UpdateSlider(i)
+        Dragging = true; UpdateSlider(i)
     end
 end))
-
-table.insert(Shared.Connections[key], Knob.InputBegan:Connect(function(i)
+table.insert(getgenv().SchmecktHubConnections, Knob.InputBegan:Connect(function(i)
     if i.UserInputType == Enum.UserInputType.MouseButton1 then
-        Dragging = true
-        UpdateSlider(i)
+        Dragging = true; UpdateSlider(i)
     end
 end))
-
-table.insert(Shared.Connections[key], UserInputService.InputEnded:Connect(function(i)
-    if i.UserInputType == Enum.UserInputType.MouseButton1 then
-        Dragging = false
-    end
+table.insert(getgenv().SchmecktHubConnections, UserInputService.InputEnded:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then Dragging = false end
 end))
-
-table.insert(Shared.Connections[key], UserInputService.InputChanged:Connect(function(i)
-    if Dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
-        UpdateSlider(i)
-    end
-end))
-
-table.insert(Shared.Connections[key], UserInputService.InputBegan:Connect(function(i, gp)
-    if not gp and i.KeyCode == Enum.KeyCode.E then
-        IsStomping = true
-    end
-end))
-
-table.insert(Shared.Connections[key], UserInputService.InputEnded:Connect(function(i)
-    if i.KeyCode == Enum.KeyCode.E then
-        IsStomping = false
-    end
+table.insert(getgenv().SchmecktHubConnections, UserInputService.InputChanged:Connect(function(i)
+    if Dragging and i.UserInputType == Enum.UserInputType.MouseMovement then UpdateSlider(i) end
 end))
 
 local function CheckGun()
@@ -161,91 +314,11 @@ local function CheckGun()
     return false
 end
 
-local function IsKnocked(char)
-    if not char then return true end
-    local bodyEffects = char:FindFirstChild("BodyEffects")
-    if bodyEffects then
-        local ko = bodyEffects:FindFirstChild("K.O")
-        if ko and ko.Value == true then return true end
-    end
-    if char:FindFirstChild("GRABBING_CONSTRAINT") then return true end
-    local hum = char:FindFirstChild("Humanoid")
-    if hum and hum.Health < 2 then return true end
-    return false
-end
+-- // MAIN LOOP (FIXED) //
 
-local function Visible(char, part)
-    local myChar = LP.Character
-    if not myChar or not part then return false end
-    local origin = Camera.CFrame.Position
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = {myChar, char}
-    local ray = Workspace:Raycast(origin, (part.Position - origin), params)
-    return ray == nil
-end
-
-local function Predict(plr, bone, hrp)
-    local vel = hrp.AssemblyLinearVelocity
-    local hum = plr.Character:FindFirstChild("Humanoid")
-    
-    if vel.Magnitude < 0.1 then return bone.Position end
-    
-    if hum and hum.MoveDirection.Magnitude > 0 then
-        return bone.Position + (hum.MoveDirection * 16 * PREDICTION)
-    end
-    
-    if vel.Y < -20 then
-        return bone.Position + (Vector3.new(vel.X, 0, vel.Z) * PREDICTION)
-    end
-    
-    return bone.Position + (vel * PREDICTION)
-end
-
-local function GetBestTarget()
-    local mp = UserInputService:GetMouseLocation()
-    local best = {score = math.huge, char = nil, part = nil, pos = nil}
-    
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr == LP then continue end
-        
-        local char = plr.Character
-        if not char then continue end
-        
-        if IsKnocked(char) then continue end
-        
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if not hrp then continue end
-        
-        for _, boneName in ipairs(Bones) do
-            local bone = char:FindFirstChild(boneName)
-            if not bone then continue end
-            
-            local sp, onScreen = Camera:WorldToViewportPoint(bone.Position)
-            if not onScreen then continue end
-            
-            local screenDist = (Vector2.new(sp.X, sp.Y) - mp).Magnitude
-            if screenDist > FOV then continue end
-            
-            if not Visible(char, bone) then continue end
-            
-            if screenDist < best.score then
-                best.score = screenDist
-                best.char = char
-                best.part = bone
-                best.pos = Predict(plr, bone, hrp)
-            end
-        end
-    end
-    
-    return best.char, best.part, best.pos
-end
-
-table.insert(Shared.Connections[key], RunService.RenderStepped:Connect(function()
-    if not Shared.SilentAim or Shared.SilentAimMethod ~= "FOV" then
+table.insert(getgenv().SchmecktHubConnections, RunService.RenderStepped:Connect(function()
+    if not Shared.SilentAim then
         UI.Enabled = false
-        Target, Part, Pos = nil, nil, nil
-        IsGunEquipped = false
         return
     end
     
@@ -253,38 +326,40 @@ table.insert(Shared.Connections[key], RunService.RenderStepped:Connect(function(
     local mousePos = UserInputService:GetMouseLocation()
     Circle.Position = UDim2.new(0, mousePos.X, 0, mousePos.Y)
     
-    if IsStomping then
-        Target, Part, Pos = nil, nil, nil
-        Stroke.Color = Color3.fromRGB(255, 255, 255)
-        TargetMarker.Visible = false
-        IsGunEquipped = false
-        return
-    end
-
     IsGunEquipped = CheckGun()
     
+    -- Reset Target
+    Target = nil
+    Pos = nil
+    Part = nil
+    TargetMarker.Visible = false
+    Stroke.Color = Color3.fromRGB(255, 255, 255)
+
     if IsGunEquipped then
-        Target, Part, Pos = GetBestTarget()
-        if Target then
-            Stroke.Color = Color3.fromRGB(255, 50, 50)
-            
-            local screenPos, onScreen = Camera:WorldToViewportPoint(Part.Position)
-            if onScreen then
-                TargetMarker.Visible = true
-                TargetMarker.Position = UDim2.new(0, screenPos.X, 0, screenPos.Y)
-            else
-                TargetMarker.Visible = false
+        -- 1. Find Target
+        local Found = GetBestTargetLooten()
+        
+        if Found then
+            Target = Found
+            -- 2. Predict Position
+            local pPos, pPart = CalculatePredictionLooten(Target)
+            if pPos then
+                Pos = pPos
+                Part = pPart
+                
+                -- Update Marker
+                local screenPos, onScreen = Camera:WorldToViewportPoint(Pos)
+                if onScreen then
+                    TargetMarker.Visible = true
+                    TargetMarker.Position = UDim2.new(0, screenPos.X, 0, screenPos.Y)
+                    Stroke.Color = Color3.fromRGB(255, 50, 50) -- Roter Kreis wenn locked
+                end
             end
-        else
-            Stroke.Color = Color3.fromRGB(255, 255, 255)
-            TargetMarker.Visible = false
         end
-    else
-        Target, Part, Pos = nil, nil, nil
-        Stroke.Color = Color3.fromRGB(255, 255, 255)
-        TargetMarker.Visible = false
     end
 end))
+
+-- // HOOKS //
 
 local mt = getrawmetatable(game)
 local oldNc = mt.__namecall
@@ -293,12 +368,13 @@ setreadonly(mt, false)
 
 mt.__namecall = newcclosure(function(self, ...)
     local m = getnamecallmethod()
-    
-    if IsGunEquipped and Target and Pos and not IsStomping then
+    local args = {...}
+
+    if IsGunEquipped and Target and Pos and Shared.SilentAim then
         if m == "Raycast" and self == Workspace then
-            local a = {...}
-            if a[1] and a[2] then
-                return oldNc(self, a[1], (Pos - a[1]).Unit * a[2].Magnitude, unpack(a, 3))
+            if args[1] and args[2] then
+                -- Redirect Raycast to Predicted Position
+                return oldNc(self, args[1], (Pos - args[1]).Unit * 1000, unpack(args, 3))
             end
         end
         
@@ -311,7 +387,7 @@ mt.__namecall = newcclosure(function(self, ...)
 end)
 
 mt.__index = newcclosure(function(self, k)
-    if IsGunEquipped and Target and Pos and not IsStomping then
+    if IsGunEquipped and Target and Pos and Shared.SilentAim then
         if self == CachedMouse then
             if k == "Hit" then return CFrame.new(Pos) end
             if k == "Target" then return Part end
