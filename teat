@@ -13,26 +13,12 @@ local CachedMouse = LP:GetMouse()
 
 getgenv().Looten = {
     ['Silent'] = {
-        Normal = {
-            Enabled = true,
-            HitChance = 100,
-        },
-        HitPart = {
-            NearestPoint = true,
-            HitPart = 'HumanoidRootPart',
-        },
-        Prediction = {
-            Enabled = true,
-            AutoMated = false,
-            Prediction = 0.135,
-        },
+        Normal = { Enabled = true, HitChance = 100 },
+        HitPart = { NearestPoint = true, HitPart = 'HumanoidRootPart' },
+        Prediction = { Enabled = true, Prediction = 0.135 },
     },
     ['Fov'] = {
-        SilentAim = {
-            Show = true,
-            Use_Radius = true,
-            Radius = 130, 
-        },
+        SilentAim = { Use_Radius = true, Radius = 130 },
     },
     ['Adjustment'] = {
         ['Checks'] = {
@@ -71,7 +57,6 @@ Shared.SilentAim = true
 
 local Target, Part, Pos = nil, nil, nil
 local IsGunEquipped = false
-
 
 local function IsPlayerValid(plr)
     if plr and plr.Character and plr.Character:FindFirstChild('HumanoidRootPart') and plr.Character:FindFirstChild('Humanoid') and plr.Character:FindFirstChild('Head') then
@@ -131,20 +116,15 @@ end
 
 local function GetBestTargetLooten()
     local FoundTarget, Closest = nil, math.huge
-    local MousePos = UserInputService:GetMouseLocation() -- Besser als Mouse.X/Y für Silent Aim
+    local MousePos = UserInputService:GetMouseLocation()
 
     for _, v in pairs(Players:GetPlayers()) do
         if v ~= Client and v.Character and v.Character:FindFirstChild('HumanoidRootPart') then
-            -- Checks
             local char = v.Character
             if getgenv().Looten.Adjustment.Checks.Knocked_Check then
                 local be = char:FindFirstChild("BodyEffects")
                 if be and be:FindFirstChild("K.O") and be["K.O"].Value then continue end
                 if char:FindFirstChild("GRABBING_CONSTRAINT") then continue end
-            end
-
-            if getgenv().Looten.Adjustment.Checks.Crew_Check then
-                -- Crew logic here if needed
             end
 
             local AimPart = char.HumanoidRootPart
@@ -196,13 +176,11 @@ local function CalculatePredictionLooten(TargetPlayer)
     elseif getgenv().DUG and TargetVel.Y < getgenv().UD then
         SilentPos = TargetCF.Position + (Vector3.new(TargetVel.X, 0, TargetVel.Z) * getgenv().Looten.Silent.Prediction.Prediction)
     elseif usePrediction or getgenv().Looten.Silent.Prediction.Enabled then
-        -- Standard Prediction
         SilentPos = TargetCF.Position + (TargetVel * getgenv().Looten.Silent.Prediction.Prediction)
     end
 
     return SilentPos, TargetPart
 end
-
 
 local UI = Instance.new("ScreenGui")
 UI.Name = "SchmecktSilent"
@@ -303,7 +281,6 @@ local function CheckGun()
     return false
 end
 
-
 table.insert(getgenv().SchmecktHubConnections, RunService.RenderStepped:Connect(function()
     if not Shared.SilentAim then
         UI.Enabled = false
@@ -336,13 +313,12 @@ table.insert(getgenv().SchmecktHubConnections, RunService.RenderStepped:Connect(
                 if onScreen then
                     TargetMarker.Visible = true
                     TargetMarker.Position = UDim2.new(0, screenPos.X, 0, screenPos.Y)
-                    Stroke.Color = Color3.fromRGB(255, 50, 50) -- Roter Kreis wenn locked
+                    Stroke.Color = Color3.fromRGB(255, 50, 50) 
                 end
             end
         end
     end
 end))
-
 
 local mt = getrawmetatable(game)
 local oldNc = mt.__namecall
@@ -356,7 +332,6 @@ mt.__namecall = newcclosure(function(self, ...)
     if IsGunEquipped and Target and Pos and Shared.SilentAim then
         if m == "Raycast" and self == Workspace then
             if args[1] and args[2] then
-                -- Redirect Raycast to Predicted Position
                 return oldNc(self, args[1], (Pos - args[1]).Unit * 1000, unpack(args, 3))
             end
         end
