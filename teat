@@ -129,9 +129,9 @@ local function GetBestTargetLooten()
 
             local AimPart = char.HumanoidRootPart
             if IsVisible(AimPart, char) then
-                local Pos, OnScreen = Camera:WorldToViewportPoint(AimPart.Position)
+                local Pos_, OnScreen = Camera:WorldToViewportPoint(AimPart.Position)
                 if OnScreen then
-                    local Distance = (Vector2.new(MousePos.X, MousePos.Y) - Vector2.new(Pos.X, Pos.Y)).Magnitude
+                    local Distance = (Vector2.new(MousePos.X, MousePos.Y) - Vector2.new(Pos_.X, Pos_.Y)).Magnitude
                     if Distance < Closest and Distance <= getgenv().Looten.Fov.SilentAim.Radius then
                         Closest = Distance
                         FoundTarget = v
@@ -210,32 +210,34 @@ TargetMarker.Parent = UI
 Instance.new("UICorner", TargetMarker).CornerRadius = UDim.new(1, 0)
 
 local Slider = Instance.new("Frame")
-Slider.AnchorPoint = Vector2.new(0, 1)
-Slider.Position = UDim2.new(0, 10, 1, -10)
-Slider.Size = UDim2.new(0, 180, 0, 32)
+Slider.AnchorPoint = Vector2.new(0.5, 0)
+Slider.Position = UDim2.new(0.5, 0, 0.86, 40)
+Slider.Size = UDim2.new(0, 220, 0, 28)
 Slider.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-Slider.Parent = UI
+Slider.Parent = CoreGui:FindFirstChild("SilentStatusQ") or UI
 Instance.new("UICorner", Slider).CornerRadius = UDim.new(0, 8)
 
 local Label = Instance.new("TextLabel")
-Label.Size = UDim2.new(1, 0, 1, 0)
+Label.Size = UDim2.new(1, -10, 1, 0)
+Label.Position = UDim2.new(0, 5, 0, 0)
 Label.BackgroundTransparency = 1
 Label.Text = "FOV: " .. getgenv().Looten.Fov.SilentAim.Radius
 Label.TextColor3 = Color3.fromRGB(255, 255, 255)
 Label.Font = Enum.Font.GothamBold
 Label.TextSize = 13
+Label.TextXAlignment = Enum.TextXAlignment.Left
 Label.Parent = Slider
 
 local Track = Instance.new("Frame")
-Track.AnchorPoint = Vector2.new(0.5, 0.5)
-Track.Position = UDim2.new(0.5, 0, 0.5, 0)
-Track.Size = UDim2.new(0.55, 0, 0, 4)
+Track.AnchorPoint = Vector2.new(1, 0.5)
+Track.Position = UDim2.new(1, -8, 0.5, 0)
+Track.Size = UDim2.new(0, 90, 0, 4)
 Track.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
 Track.Parent = Slider
 Instance.new("UICorner", Track).CornerRadius = UDim.new(1, 0)
 
 local Knob = Instance.new("Frame")
-Knob.Size = UDim2.new(0, 12, 0, 12)
+Knob.Size = UDim2.new(0, 10, 0, 10)
 Knob.AnchorPoint = Vector2.new(0.5, 0.5)
 Knob.Position = UDim2.new((getgenv().Looten.Fov.SilentAim.Radius - 40) / 260, 0, 0.5, 0)
 Knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
