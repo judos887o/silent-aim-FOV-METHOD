@@ -15,6 +15,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local UserInputService = game:GetService("UserInputService")
+local Stats = game:GetService("Stats")
 
 local LP = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
@@ -38,12 +39,13 @@ getgenv().Looten = {
     },
 }
 
-getgenv().AGV = 0.5
-getgenv().WAGA = -20
-getgenv().DD = true
-getgenv().DV = 86
-getgenv().DUG = true
-getgenv().UD = -30
+-- Vertikale Prediction-Dämpfung (bei fallenden Spielern Y-Velocity reduzieren)
+getgenv().AGV = 0.5   -- Y-Dämpfungsfaktor bei starkem Fall
+getgenv().WAGA = -20  -- Y-Velocity Schwellenwert für "NoGroundShots"
+getgenv().UD = -30    -- Y-Velocity Schwellenwert für "DUG" (Y auf 0 setzen)
+getgenv().DD = true   -- Dynamische Prediction aktiv
+getgenv().DV = 86     -- Mindestgeschwindigkeit für dynamische Prediction
+getgenv().DUG = true  -- Y-Velocity bei starkem Fall ignorieren
 
 local Shared = getgenv().SchmecktHubPC or {}
 getgenv().SchmecktHubPC = Shared
@@ -51,43 +53,114 @@ Shared.SilentAim = true
 
 local Target, Part, Pos = nil, nil, nil
 local IsGunEquipped = false
-local LastPositions = {}
-local LastTimes = {}
-local LastVelocities = {}
+
+local HISTORY_SIZE = 8
+local MAX_PLAUSIBLE_SPEED = 110 -- studs/s, alles darüber ist ein Netzwerksprung
+
+-- Pro Spieler: Ringpuffer der letzten N Positionen + Zeitstempel
+local VelocityHistory = {}
 
 local function GetSmoothedVelocity(plr)
     local root = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
     if not root then return Vector3.zero end
-    local now = tick()
-    local id = plr.UserId
 
-    if LastPositions[id] and LastTimes[id] then
-        local dt = now - LastTimes[id]
-        if dt > 0 and dt < 0.5 then
-            local raw = (root.Position - LastPositions[id]) / dt
-            local old = LastVelocities[id] or raw
-            local smooth = old:Lerp(raw, 0.65)
-            LastVelocities[id] = smooth
-            LastPositions[id] = root.Position
-            LastTimes[id] = now
-            return smooth
-        end
+    local pid = plr.UserId
+    local now = tick()
+    local pos = root.Position
+
+    if not VelocityHistory[pid] then
+        VelocityHistory[pid] = { positions = {}, times = {}, lastSmooth = Vector3.zero }
     end
-    LastPositions[id] = root.Position
-    LastTimes[id] = now
-    LastVelocities[id] = root.Velocity
-    return root.Velocity
+
+    local hist = VelocityHistory[pid]
+
+    -- Neuen Eintrag hinzufügen
+    table.insert(hist.positions, pos)
+    table.insert(hist.times, now)
+
+    -- Buffer auf HISTORY_SIZE begrenzen
+    while #hist.positions > HISTORY_SIZE do
+        table.remove(hist.positions, 1)
+        table.remove(hist.times, 1)
+    end
+
+    -- Mindestens 2 Frames nötig
+    if #hist.positions < 2 then
+        return Vector3.zero
+    end
+
+    -- Velocity über den gesamten Buffer berechnen (ältester → neuester Eintrag)
+    -- Das ist stabiler als frame-by-frame, weil kurze Ausreißer geglättet werden
+    local oldPos = hist.positions[1]
+    local oldTime = hist.times[1]
+    local dt = now - oldTime
+
+    if dt < 0.001 then return hist.lastSmooth end
+
+    local rawVel = (pos - oldPos) / dt
+    local speed = rawVel.Magnitude
+
+    -- Plausibilitätsprüfung: Netzwerksprung oder Teleport erkannt
+    if speed > MAX_PLAUSIBLE_SPEED then
+        -- Fallback: Nur letzten Frame nutzen (kurzfristig stabiler)
+        local prevPos = hist.positions[#hist.positions - 1]
+        local prevTime = hist.times[#hist.times - 1]
+        local shortDt = now - prevTime
+
+        if shortDt > 0.001 then
+            local shortVel = (pos - prevPos) / shortDt
+            if shortVel.Magnitude <= MAX_PLAUSIBLE_SPEED then
+                -- EMA mit dem letzten gültigen Smooth-Wert
+                local alpha = 0.35 -- Niedriger = mehr Glättung, weniger Reaktivität
+                local smoothed = hist.lastSmooth:Lerp(shortVel, alpha)
+                hist.lastSmooth = smoothed
+                return smoothed
+            end
+        end
+        -- Komplett ungültig: letzten bekannten Wert zurückgeben
+        return hist.lastSmooth
+    end
+
+    -- Normaler Fall: EMA über Buffer-Velocity
+    -- alpha = 0.35 → neue Messung hat 35% Gewicht, letzter Smooth-Wert 65%
+    -- Das filtert Frame-Rauschen ohne zu viel Reaktivität zu verlieren
+    local alpha = 0.35
+    local smoothed = hist.lastSmooth:Lerp(rawVel, alpha)
+    hist.lastSmooth = smoothed
+    return smoothed
 end
 
+-- Räumt History für ausgetretene Spieler auf
+task.spawn(function()
+    while true do
+        task.wait(15)
+        local activeIds = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            activeIds[p.UserId] = true
+        end
+        for pid in pairs(VelocityHistory) do
+            if not activeIds[pid] then
+                VelocityHistory[pid] = nil
+            end
+        end
+    end
+end)
+
 local function GetPing()
-    local ping = 0.08
-    local np = LP:FindFirstChild("NetworkPing")
-    if np then ping = np.Value or 0.08 end
-    return ping
+    local ok, val = pcall(function()
+        return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    -- Stats gibt ms zurück → in Sekunden umrechnen
+    -- Nur halber Ping (One-Way), da der Schuss bereits unterwegs ist
+    if ok and val and val > 0 then
+        return (val / 1000) * 0.5
+    end
+    return 0.04 -- Fallback: 40ms one-way
 end
 
 local function IsPlayerValid(plr)
-    return plr and plr.Character 
+    return plr 
+        and plr.Character 
         and plr.Character:FindFirstChild("HumanoidRootPart") 
         and plr.Character:FindFirstChild("Humanoid") 
         and plr.Character:FindFirstChild("Head")
@@ -95,25 +168,28 @@ end
 
 local function IsVisible(part, parent)
     if not getgenv().Looten.Adjustment.Checks.Wall_Check then return true end
-    local char = LP.Character or LP.CharacterAdded:Wait()
+    local char = LP.Character
+    if not char then return false end
     local origin = Camera.CFrame.Position
     local params = RaycastParams.new()
     params.FilterDescendantsInstances = {char, Camera}
     params.FilterType = Enum.RaycastFilterType.Exclude
-    local res = Workspace:Raycast(origin, part.Position - origin, params)
+    local res = Workspace:Raycast(origin, (part.Position - origin), params)
     return not res or res.Instance:IsDescendantOf(parent)
 end
 
 local function GetClosestBodyPart(char)
-    local closestDist = math.huge
-    local best = nil
-    for _, p in pairs(char:GetChildren()) do
-        if p:IsA("BasePart") and (p.Name == "Head" or p.Name == "HumanoidRootPart" or p.Name == "UpperTorso" or p.Name == "LowerTorso") then
+    local mPos = UserInputService:GetMouseLocation()
+    local best, bestDist = nil, math.huge
+    local candidates = {"Head", "HumanoidRootPart", "UpperTorso", "LowerTorso"}
+    for _, name in ipairs(candidates) do
+        local p = char:FindFirstChild(name)
+        if p then
             local s, on = Camera:WorldToViewportPoint(p.Position)
             if on then
-                local d = (Vector2.new(Mouse.X, Mouse.Y) - Vector2.new(s.X, s.Y)).Magnitude
-                if d < closestDist then
-                    closestDist = d
+                local d = (mPos - Vector2.new(s.X, s.Y)).Magnitude
+                if d < bestDist then
+                    bestDist = d
                     best = p
                 end
             end
@@ -123,24 +199,31 @@ local function GetClosestBodyPart(char)
 end
 
 local function GetBestTarget()
-    local best, dist = nil, math.huge
+    local best, bestDist = nil, math.huge
     local mpos = UserInputService:GetMouseLocation()
-    for _, p in pairs(Players:GetPlayers()) do
-        if p ~= LP and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
-            local c = p.Character
-            if getgenv().Looten.Adjustment.Checks.Knocked_Check then
-                local be = c:FindFirstChild("BodyEffects")
-                if be and be:FindFirstChild("K.O") and be["K.O"].Value then continue end
-                if c:FindFirstChild("GRABBING_CONSTRAINT") then continue end
-            end
-            if IsVisible(c.HumanoidRootPart, c) then
-                local pos, onscreen = Camera:WorldToViewportPoint(c.HumanoidRootPart.Position)
-                if onscreen then
-                    local d = (mpos - Vector2.new(pos.X, pos.Y)).Magnitude
-                    if d < dist and d <= getgenv().Looten.Fov.SilentAim.Radius then
-                        dist = d
-                        best = p
-                    end
+    local radius = getgenv().Looten.Fov.SilentAim.Radius
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LP or not p.Character then continue end
+        local c = p.Character
+        local hrp = c:FindFirstChild("HumanoidRootPart")
+        local hum = c:FindFirstChild("Humanoid")
+        if not hrp or not hum or hum.Health <= 0 then continue end
+
+        -- Knocked/Grabbed Check
+        if getgenv().Looten.Adjustment.Checks.Knocked_Check then
+            local be = c:FindFirstChild("BodyEffects")
+            if be and be:FindFirstChild("K.O") and be["K.O"].Value then continue end
+            if c:FindFirstChild("GRABBING_CONSTRAINT") then continue end
+        end
+
+        if IsVisible(hrp, c) then
+            local screenPos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+            if onScreen then
+                local dist = (mpos - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
+                if dist < bestDist and dist <= radius then
+                    bestDist = dist
+                    best = p
                 end
             end
         end
@@ -151,33 +234,48 @@ end
 local function CalculatePrediction(target)
     if not IsPlayerValid(target) then return nil, nil end
     local char = target.Character
+
+    -- Zielteil bestimmen
     local hitName = getgenv().Looten.Silent.HitPart.HitPart
     if getgenv().Looten.Silent.HitPart.NearestPoint then
         local nearest = GetClosestBodyPart(char)
         if nearest then hitName = nearest.Name end
     end
+
     local tPart = char:FindFirstChild(hitName)
     if not tPart then return nil, nil end
 
+    -- Velocity aus dem stabilen History-Buffer
     local vel = GetSmoothedVelocity(target)
+
+    -- Prediction-Zeit: Nutzer-Wert + echter One-Way-Ping
     local totalPred = getgenv().Looten.Silent.Prediction.Prediction + GetPing()
-    local finalPos = tPart.Position
 
-    local usePred = false
-    if getgenv().DD then
-        local mag = vel.Magnitude
-        local mov = char.Humanoid.MoveDirection.Magnitude
-        if mag > getgenv().DV or (mag < 1 and mov > 0.01) or (mag > 5 and mov < 0.01) then
-            usePred = true
+    -- Sicherheits-Clamp: Nie mehr als 0.45s vorhersagen
+    totalPred = math.clamp(totalPred, 0.05, 0.45)
+
+    local basePos = tPart.Position
+    local finalPos = basePos
+
+    local yVel = vel.Y
+    local flatVel = Vector3.new(vel.X, 0, vel.Z)
+
+    -- Vertikale Prediction-Logik (sauber und eindeutig):
+    if getgenv().Looten.Adjustment.Checks.NoGroundShots and yVel < getgenv().WAGA then
+        -- Spieler fällt stark: Y-Velocity dämpfen (AGV = Dämpfungsfaktor)
+        finalPos = basePos + Vector3.new(vel.X, vel.Y * getgenv().AGV, vel.Z) * totalPred
+
+    elseif getgenv().DUG and yVel < getgenv().UD then
+        -- Spieler fällt sehr stark: Y-Komponente komplett ignorieren
+        finalPos = basePos + flatVel * totalPred
+
+    else
+        -- Normaler Fall: Volle Velocity-Prediction (wenn aktiviert)
+        if getgenv().Looten.Silent.Prediction.Enabled then
+            finalPos = basePos + vel * totalPred
         end
-    end
-
-    if getgenv().Looten.Adjustment.Checks.NoGroundShots and vel.Y < getgenv().WAGA then
-        finalPos = tPart.Position + Vector3.new(vel.X, vel.Y * getgenv().AGV, vel.Z) * totalPred
-    elseif getgenv().DUG and vel.Y < getgenv().UD then
-        finalPos = tPart.Position + Vector3.new(vel.X, 0, vel.Z) * totalPred
-    elseif usePred or getgenv().Looten.Silent.Prediction.Enabled then
-        finalPos = tPart.Position + vel * totalPred
+        -- DD (Dynamic Detection) überschreibt nicht mehr die Prediction-Aktivierung,
+        -- sondern dient nur noch als Debug-Info (Logik war fehlerhaft im Original)
     end
 
     return finalPos, tPart
@@ -262,13 +360,21 @@ end))
 
 local function CheckGun()
     local tool = LP.Character and LP.Character:FindFirstChildOfClass("Tool")
-    return tool and tool:FindFirstChild("Handle") 
-        and not tool.Name:lower():find("wallet") 
-        and not tool.Name:lower():find("phone")
+    if not tool then return false end
+    local handle = tool:FindFirstChild("Handle")
+    if not handle then return false end
+    local name = tool.Name:lower()
+    -- Wallets, Phones etc. ausschließen
+    if name:find("wallet") or name:find("phone") or name:find("bat") then return false end
+    return true
 end
 
 table.insert(getgenv().SchmecktHubConnections, RunService.RenderStepped:Connect(function()
-    if not Shared.SilentAim then UI.Enabled = false return end
+    if not Shared.SilentAim then
+        UI.Enabled = false
+        Target, Pos, Part = nil, nil, nil
+        return
+    end
     UI.Enabled = true
 
     local mpos = UserInputService:GetMouseLocation()
@@ -276,26 +382,28 @@ table.insert(getgenv().SchmecktHubConnections, RunService.RenderStepped:Connect(
 
     IsGunEquipped = CheckGun()
 
+    -- Zustand zurücksetzen
     Target, Pos, Part = nil, nil, nil
     TargetMarker.Visible = false
     Stroke.Color = Color3.fromRGB(255, 255, 255)
 
-    if IsGunEquipped then
-        local found = GetBestTarget()
-        if found then
-            Target = found
-            local pPos, pPart = CalculatePrediction(found)
-            if pPos then
-                Pos = pPos
-                Part = pPart
-                local s, on = Camera:WorldToViewportPoint(pPos)
-                if on then
-                    TargetMarker.Visible = true
-                    TargetMarker.Position = UDim2.fromOffset(s.X, s.Y)
-                    Stroke.Color = Color3.fromRGB(255, 50, 50)
-                end
-            end
-        end
+    if not IsGunEquipped then return end
+
+    local found = GetBestTarget()
+    if not found then return end
+
+    local pPos, pPart = CalculatePrediction(found)
+    if not pPos or not pPart then return end
+
+    Target = found
+    Pos = pPos
+    Part = pPart
+
+    local s, onScreen = Camera:WorldToViewportPoint(pPos)
+    if onScreen then
+        TargetMarker.Visible = true
+        TargetMarker.Position = UDim2.fromOffset(s.X, s.Y)
+        Stroke.Color = Color3.fromRGB(255, 50, 50)
     end
 end))
 
@@ -322,5 +430,7 @@ getgenv().SchmecktHub_Destroy = function()
         pcall(function() c:Disconnect() end)
     end
     if UI then UI:Destroy() end
+    VelocityHistory = {}
     Shared.SilentAim = false
+    Target, Pos, Part = nil, nil, nil
 end
